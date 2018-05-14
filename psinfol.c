@@ -19,6 +19,14 @@
 #include <semaphore.h>
 
 #define MAX_BUFFER 150
+#define BUFFER_PROC 3 //# de procesos en buffer
+
+//variables globales
+sem_t ubicar;
+sem_t imprimir;
+
+int n_procs; //# de procesos pasados como argumentos
+int pid_busqueda; //pid a buscar para imprimir
 
 
 //#define DEBUG
@@ -34,54 +42,68 @@ typedef struct p_ {
   int nonvoluntary_ctxt_switches;
 } proc_info;
 
+proc_info* all_proc; //buffer
+
 void* load_info(void* proceso);
-void print_info(proc_info* pi);
+void* print_info();
   
 int main(int argc, char *argv[]){
   int i;
   // number of process ids passed as command line parameters
   // (first parameter is the program name) 
-  int n_procs = argc - 1;
-  proc_info* all_proc;
+  n_procs = argc - 1;
+  
   
   if(argc < 2){
     printf("Error\n");
     exit(1);
   }
   /*Allocate memory for each process info*/
-  all_proc = (proc_info *)malloc(sizeof(proc_info)*n_procs);
+  all_proc = (proc_info *)malloc(sizeof(proc_info)*BUFFER_PROC);
   assert(all_proc!=NULL);
   
   //create threads
   pthread_t hilo[n_procs];
+  pthread_t imprime;
 
-  // Get information from status file
+  //inicializacion de semaforos
+  sem_init(&ubicar,0, 2);
+  sem_init(&imprimir,0,0);
 
+  pthread_create(&imprime,NULL,print_info,NULL);
+
+  
   for(i = 0; i < n_procs; i++){
-    int pid = atoi(argv[i+1]);
-    all_proc[i].pid = pid;
+    sem_wait(&ubicar);
 
-    //Thread create
-    pthread_create(&hilo[i],NULL, &load_info, &all_proc[i]);
+    for(int j = 0; j < BUFFER_PROC; j++){
+        int pid = atoi(argv[i+1]);
+        if(all_proc[j].pid == 0){
+          all_proc[j].pid = pid;
+          
+          //Thread create
 
-
-
+          pthread_create(&hilo[i],NULL, &load_info, &all_proc[j]);
+          sem_post(&imprimir);
+          break;
+        }
+    }
     //load_info(pid, &all_proc[i]);
   }
 
   for(i = 0; i < n_procs; i++){
     pthread_join(hilo[i],NULL);    
   }
-  
-  //print information from all_proc buffer
-  for(i = 0; i < n_procs; i++){
-    //hilo
-    print_info(&all_proc[i]);
-  }
+
+  //espera de hilo imprimir
+  pthread_join(imprime,NULL);
+
 
 
   // free heap memory
   free(all_proc);
+  sem_destroy(&ubicar);
+  sem_destroy(&imprimir);
   
   return 0;
 }
@@ -99,12 +121,13 @@ void* load_info(void* proceso){
   char buffer[MAX_BUFFER]=""; 
   char path[MAX_BUFFER]="";
   char* token;
-  printf("Hilo # %lu\n",pthread_self());
+
   //instancia de
    proc_info *myinfo;
    myinfo = (proc_info *) proceso;
 
    int c = myinfo->pid;
+   //pid_busqueda = c;
 
   sprintf(path, "/proc/%d/status", c);
   fpstatus = fopen(path, "r");
@@ -112,7 +135,7 @@ void* load_info(void* proceso){
 #ifdef DEBUG
   printf("%s\n", path);
 #endif // DEBUG
-  myinfo->pid = c;
+  //myinfo->pid = c;
   while (fgets(buffer, MAX_BUFFER, fpstatus)) {
     token = strtok(buffer, ":\t");
     if (strstr(token, "Name")){
@@ -149,6 +172,7 @@ void* load_info(void* proceso){
 
   }
   fclose(fpstatus);
+  
   return NULL;
 }
 /**
@@ -158,14 +182,42 @@ void* load_info(void* proceso){
  *
  *  \param pi (in) process info struct
  */ 
-void print_info(proc_info* pi){
-  printf("PID: %d \n", pi->pid);
-  printf("Nombre del proceso: %s", pi->name);
-  printf("Estado: %s", pi->state);
-  printf("Tamaño total de la imagen de memoria: %s", pi->vmsize);
-  printf("Tamaño de la memoria en la región TEXT: %s", pi->vmexe);
-  printf("Tamaño de la memoria en la región DATA: %s", pi->vmdata);
-  printf("Tamaño de la memoria en la región STACK: %s", pi->vmstk);
-  printf("Número de cambios de contexto realizados (voluntarios"
-	 "- no voluntarios): %d  -  %d\n\n", pi->voluntary_ctxt_switches,  pi->nonvoluntary_ctxt_switches);
+void* print_info(){
+  
+
+  //hacer el ciclo para recorrer el pid!=0 a buscar
+  proc_info* pi;
+  int i = 0;
+  int procesos_impresos = 0;
+  while(1){
+    sem_wait(&imprimir);
+    
+    while(1){
+      if(i == BUFFER_PROC){
+        i = 0;
+      }
+      if(all_proc[i].pid != 0){
+        pi = &all_proc[i];
+        printf("PID: %d \n", pi->pid);
+        printf("Nombre del proceso: %s", pi->name);
+        printf("Estado: %s", pi->state);
+        printf("Tamaño total de la imagen de memoria: %s", pi->vmsize);
+        printf("Tamaño de la memoria en la región TEXT: %s", pi->vmexe);
+        printf("Tamaño de la memoria en la región DATA: %s", pi->vmdata);
+        printf("Tamaño de la memoria en la región STACK: %s", pi->vmstk);
+        printf("Número de cambios de contexto realizados (voluntarios"
+        "- no voluntarios): %d  -  %d\n\n", pi->voluntary_ctxt_switches,  pi->nonvoluntary_ctxt_switches);
+        all_proc[i].pid = 0;
+        sem_post(&ubicar);
+        procesos_impresos++;
+        break;
+      }
+      i++;      
+    }   
+
+    if(procesos_impresos>=n_procs){
+      break;
+    }
+  }
+   return NULL;
 }
